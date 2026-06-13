@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Spatial Transcript Tagger</title>
+
+    <style>
+      body {
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        margin: 0;
+        background: #fafafa;
+        color: #111;
+      }
+
+      .page {
+        max-width: 980px;
+        margin: 32px auto;
+        padding: 0 24px;
+      }
+
+      h1 {
+        margin-bottom: 8px;
+        font-size: 32px;
+      }
+
+      .subtitle {
+        color: #555;
+        margin-bottom: 24px;
+      }
+
+      .card {
+        background: white;
+        border: 1px solid #e5e5e5;
+        border-radius: 14px;
+        padding: 20px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.04);
+        margin-bottom: 24px;
+      }
+
+      .controls {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 18px;
+        align-items: end;
+      }
+
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      label {
+        font-weight: 600;
+        font-size: 14px;
+      }
+
+      input[type="file"],
+      select {
+        padding: 10px;
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        background: white;
+        font-size: 14px;
+      }
+
+      .temp-row {
+        display: grid;
+        grid-template-columns: 1fr 42px;
+        gap: 10px;
+        align-items: center;
+      }
+
+      #temperatureValue {
+        display: inline-block;
+        width: 42px;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .actions {
+        display: flex;
+        gap: 12px;
+        margin-top: 20px;
+      }
+
+      button {
+        padding: 11px 16px;
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        background: white;
+        cursor: pointer;
+        font-size: 14px;
+      }
+
+      button.primary {
+        background: #111;
+        color: white;
+        border-color: #111;
+      }
+
+      button:hover {
+        opacity: 0.85;
+      }
+
+      .status-title {
+        font-size: 18px;
+        margin-bottom: 10px;
+      }
+
+      pre {
+        background: #f3f3f3;
+        padding: 16px;
+        border-radius: 12px;
+        white-space: pre-wrap;
+        min-height: 190px;
+        overflow: auto;
+        border: 1px solid #e2e2e2;
+      }
+
+      @media (max-width: 800px) {
+        .controls {
+          grid-template-columns: 1fr;
+        }
+
+        .actions {
+          flex-direction: column;
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <main class="page">
+      <h1>Spatial Transcript Tagger</h1>
+      <p class="subtitle">
+        Select a folder containing .txt, .cha, .xlsx, or .csv transcript files.
+      </p>
+
+      <section class="card">
+        <div class="controls">
+          <div class="field">
+            <label for="folder">Transcript folder</label>
+            <input id="folder" type="file" webkitdirectory directory multiple />
+          </div>
+
+          <div class="field">
+            <label for="agentMode">Agent mode</label>
+            <select id="agentMode">
+              <option value="multi" selected>Multi-agent</option>
+              <option value="single">Single-agent</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="model">Model</label>
+            <select id="model">
+              <option value="gpt-5.5" selected>gpt-5.5</option>
+              <option value="gpt-5.5-pro">gpt-5.5-pro</option>
+              <option value="gpt-4o">gpt-4o</option>
+              <option value="gpt-4o-mini">gpt-4o-mini</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="reasoningEffort">Reasoning effort</label>
+            <select id="reasoningEffort">
+              <option value="none">none</option>
+              <option value="low">low</option>
+              <option value="medium" selected>medium</option>
+              <option value="high">high</option>
+              <option value="xhigh">xhigh</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="temperature">Temperature</label>
+            <div class="temp-row">
+              <input id="temperature" type="range" min="0" max="1" step="0.1" value="0" />
+              <span id="temperatureValue">0</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button id="run" class="primary">Run and Download XLSX</button>
+          <button id="clear">Clear</button>
+        </div>
+      </section>
+
+      <section>
+        <h2 class="status-title">Status</h2>
+        <pre id="status"></pre>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

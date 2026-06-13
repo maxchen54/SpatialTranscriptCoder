@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Puter Batch Transcript Tagger (Test)</title>
+
+    <script src="https://js.puter.com/v2/"></script>
+
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; max-width: 1100px; }
+      button { padding: 10px 12px; cursor: pointer; }
+      input, select { padding: 8px; }
+      .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+      pre { margin-top: 12px; background: #f7f7f7; padding: 12px; border-radius: 10px; overflow: auto; min-height: 140px; }
+      .muted { color: #555; font-size: 14px; }
+    </style>
+  </head>
+
+  <body>
+    <div class="row">
+      <button id="run">Sign in + pick folder + run</button>
+
+      <label class="muted">
+        Model
+        <select id="model">
+          <option value="gpt-5-nano" selected>gpt-5-nano</option>
+          <option value="gpt-4o-mini">gpt-4o-mini</option>
+          <option value="gpt-4o">gpt-4o</option>
+        </select>
+      </label>
+
+      <label class="muted">
+        Temp
+        <input id="temp" type="number" min="0" max="1" step="0.1" value="1" />
+      </label>
+
+      <label class="muted">
+        Lines per chunk
+        <input id="chunk" type="number" min="5" max="200" step="5" value="40" />
+      </label>
+
+      <label class="muted">
+        Folder
+        <input id="folder" type="file" webkitdirectory directory multiple />
+      </label>
+    </div>
+
+    <p class="muted">
+      Pick a folder containing .txt or .cha files. This will run the rubric prompt on every file and download one CSV.
+    </p>
+
+    <pre id="out"></pre>
+
+    <script type="module">
+      import { rubric3, spatial_words } from "./rubrics.js";
+
+      const btn = document.getElementById("run");
+      const outEl = document.getElementById("out");
+      const folderEl = document.getElementById("folder");
+      const modelEl = document.getElementById("model");
+      const tempEl = document.getElementById("temp");
+      const chunkEl = document.getElementById("chunk");
+
+      function log(msg) {
+        outEl.textContent += msg + "\n";
+        outEl.scrollTop = outEl.scrollHeight;
+        console.log(msg);
+      }
+
+      function buildSystemPrompt(dictSubset) {
+        const rubricText =
+          typeof rubric3 === "string" ? rubric3 : JSON.stringify(rubric3, null, 2);
+
+        const dictText = JSON.stringify(dictSubset ?? spatial_words);
+
+        return `You are a linguist trained in annotation of spatial language in conversational transcripts.
+
+        You will be given a JSON array of transcript lines. Each element has:
+        - lineNo (number)
+        - speaker (string)
+        - utterance (string)
+
+        Your job is to label EACH line independently.
+
+        Definition:
+        A line is "spatial" (spatial=1) if, in context, it contains spatial language as defined by the rubric below. Spatial language includes spatial relations, directions, motion in space, positions/orientations, descriptions of shapes/sizes/dimensions, perspective-taking, or spatial problem-solving language. Mark spatial=0 otherwise.
+
+        Procedure for EACH line:
+        1) Dictionary match:
+          - Identify all tokens or short phrases in the utterance that appear in the provided spatial dictionary.
+          - Include multiword deictic phrases when applicable (e.g., "right here", "over there") by listing the component words that appear in the dictionary.
+        2) Context check using rubric:
+          - Decide whether each matched term is used with spatial meaning in this utterance.
+          - If none of the dictionary matches are used spatially, consider whether the utterance still expresses spatial meaning per the rubric using terms not in the dictionary.
+        3) Output fields:
+          - spatialWordsDetected: list ONLY the terms you judge to be spatial in this utterance (dictionary terms and optionally additional spatial terms you found).
+          - spatial: 1 if the utterance contains any spatial language per rubric; else 0.
+          - rationale: 1–2 concise sentences. Cite the specific word(s)/phrase(s) and the rubric category (by name) that justifies the label.
+
+        Output format (MANDATORY):
+        - Return JSONL ONLY: one JSON object per input line, one per line.
+        - Output exactly ONE object for EACH input element.
+        - Preserve the same order as the input.
+        - Do NOT skip any lineNo.
+        - Do NOT wrap output in markdown fences.
+        - Do NOT output any text besides JSON objects.
+
+        Each JSONL line must match this schema exactly:
+        {"lineNo": number, "spatial": 0 or 1, "spatialWordsDetected": string[], "rationale": string}
+
+        Rubric (authoritative):
+        ${rubricText}
+
+        Spatial dictionary:
+        ${dictText}`;
+      }
+
+
+      function withTimeout(promise, ms, label) {
+        let t;
+        const timeout = new Promise((_, reject) => {
+            t = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+        });
+        return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
+        }
+
+
+      async function ensurePuterSignedIn() {
+        await puter.auth.signIn();
+      }
+
+      function parseJsonl(text) {
+        const s = String(text || "").trim()
+          .replace(/^```jsonl\s*/i, "")
+          .replace(/^```json\s*/i, "")
+          .replace(/^```\s*/i, "")
+          .replace(/```$/i, "")
+          .trim();
+
+        const lines = s.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        const out = [];
+
+        for (const line of lines) {
+          if (!line.startsWith("{") || !line.endsWith("}")) continue;
+          try {
+            out.push(JSON.parse(line));
+          } catch {
+          }
+        }
+        return out;
+      }
+
+      function extractText(resp) {
+        return (
+          (typeof resp === "string" && resp) ||
+          resp?.message?.content ||
+          (typeof resp?.message === "string" && resp.message) ||
+          resp?.choices?.[0]?.message?.content ||
+          resp?.content ||
+          JSON.stringify(resp)
+        );
+      }
+
+      async function callPuter(messages, opts) {
+        return await puter.ai.chat(messages, opts);
+      }
+
+      function cleanupChatUtterance(s) {
+        let out = String(s);
+        out = out.replace(/\[[^\]]*\]/g, "");
+        out = out.replace(/<([^>]+)>/g, "$1");
+        out = out.replace(/\s+/g, " ").trim();
+        return out;
+      }
+
+      function parseChaToTurns(text) {
+        const rawLines = text.split(/\r?\n/);
+        const out = [];
+        let current = null;
+        let lineNo = 0;
+
+        for (const raw of rawLines) {
+          const line = raw.replace(/\uFEFF/g, "");
+          if (!line.trim()) continue;
+          if (line.startsWith("@")) continue;
+
+          const m = line.match(/^\*([A-Za-z0-9_]+):\s*(.*)$/);
+          if (m) {
+            if (current) out.push(current);
+            lineNo += 1;
+            current = { lineNo, speaker: m[1], utterance: cleanupChatUtterance(m[2] || "") };
+            continue;
+          }
+
+          if (/^\s+/.test(line) && current) {
+            current.utterance += " " + cleanupChatUtterance(line.trim());
+          }
+        }
+
+        if (current) out.push(current);
+        return out;
+      }
+
+      function parseTxtLines(text) {
+        const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+        return lines.map((utterance, idx) => ({ lineNo: idx + 1, speaker: "", utterance }));
+      }
+
+      function chunkArray(arr, size) {
+        const chunks = [];
+        for (let i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
+        return chunks;
+      }
+
+      async function labelChunk(promptObj, model, temperature) {
+        const systemPrompt = buildSystemPrompt();
+        const userPayload = JSON.stringify(promptObj, null, 2);
+
+        // ===== DEBUG: SHOW INPUT =====
+        console.log("\n========== NEW CHUNK ==========");
+        console.log("Transcript being sent:");
+        promptObj.forEach(r => {
+          console.log(`[${r.lineNo}] ${r.speaker}: ${r.utterance}`);
+        });
+
+        console.log("System prompt length:", systemPrompt.length);
+        console.log("User payload length:", userPayload.length);
+
+        // ===== ORIGINAL CALL (unchanged) =====
+        const resp = await withTimeout(
+          callPuter(
+            [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: userPayload }
+            ],
+            { model, temperature }
+          ),
+          90000,
+          "puter.ai.chat"
+        );
+
+        // ===== DEBUG: RAW RESPONSE =====
+        console.log("Raw puter response:");
+        console.log(resp);
+
+        const text = extractText(resp);
+
+        // ===== DEBUG: MODEL TEXT =====
+        console.log("Model extracted text:");
+        console.log(text);
+
+        // ===== ORIGINAL PARSE (unchanged) =====
+        let items = parseJsonl(text);
+
+        if (items.length !== promptObj.length) {
+          console.warn(`Expected ${promptObj.length} outputs, got ${items.length}`);
+        }
+
+        if (!items.length) {
+          console.warn("JSONL parsing failed. Retrying conversion...");
+
+          const retryResp = await withTimeout(
+            callPuter(
+              [
+                {
+                  role: "system",
+                  content: "Return ONLY JSONL. One JSON object per line. No commentary."
+                },
+                {
+                  role: "user",
+                  content: "Convert this into valid JSONL only:\n" + text
+                }
+              ],
+              { model, temperature: 0 }
+            ),
+            90000,
+            "puter.ai.chat retry"
+          );
+
+          const retryText = extractText(retryResp);
+
+          console.log("Retry response text:");
+          console.log(retryText);
+
+          items = parseJsonl(retryText);
+        }
+
+        // ===== DEBUG: FINAL PARSED OUTPUT =====
+        console.log("Parsed items:");
+        console.log(items);
+
+        return items;
+      }
+
+
+      function toCsvCell(v) {
+        const s = String(v ?? "");
+        if (s.includes('"') || s.includes(",") || s.includes("\n")) return `"${s.replaceAll('"', '""')}"`;
+        return s;
+      }
+
+      function toCsv(rows) {
+        const header = ["file", "lineNo", "speaker", "utterance", "spatial", "spatialWordsDetected", "rationale"];
+        const lines = [header];
+
+        for (const r of rows) {
+          lines.push([
+            r.file,
+            r.lineNo,
+            r.speaker || "",
+            r.utterance || "",
+            r.spatial,
+            (r.spatialWordsDetected || []).join("|"),
+            r.rationale || ""
+          ]);
+        }
+
+        return lines.map(cols => cols.map(toCsvCell).join(",")).join("\n");
+      }
+
+      function downloadCsv(text) {
+        const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "puter_batch_results.csv";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      }
+
+      async function processFile(file, model, temperature, chunkSize) {
+        const name = (file.name || "").toLowerCase();
+        const text = await file.text();
+
+        const rows = name.endsWith(".cha") ? parseChaToTurns(text) : parseTxtLines(text);
+        const chunks = chunkArray(rows, chunkSize);
+
+        const out = [];
+        for (let i = 0; i < chunks.length; i++) {
+          log(`  chunk ${i + 1}/${chunks.length} ...`);
+
+          const promptObj = chunks[i].map(r => ({
+            lineNo: r.lineNo,
+            speaker: r.speaker || "",
+            utterance: r.utterance || ""
+          }));
+
+          const json = await labelChunk(promptObj, model, temperature);
+          if (!Array.isArray(json) || json.length === 0) {
+            throw new Error("Model did not return any parseable JSONL lines for this chunk");
+          }
+
+          const byLine = new Map(chunks[i].map(r => [r.lineNo, r]));
+          for (const item of json) {
+            const src = byLine.get(item.lineNo);
+            if (!src) continue;
+
+            out.push({
+              file: file.webkitRelativePath || file.name,
+              lineNo: src.lineNo,
+              speaker: src.speaker || "",
+              utterance: src.utterance || "",
+              spatial: item.spatial === 1 ? 1 : 0,
+              spatialWordsDetected: Array.isArray(item.spatialWordsDetected) ? item.spatialWordsDetected : [],
+              rationale: typeof item.rationale === "string" ? item.rationale : ""
+            });
+          }
+        }
+
+        return out;
+      }
+
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        outEl.textContent = "";
+
+        try {
+          // quick sanity check: avoid silent undefined issues
+          log(`rubric3 type: ${typeof rubric3}`);
+          log(`spatial_words length: ${Array.isArray(spatial_words) ? spatial_words.length : "NOT ARRAY"}`);
+
+          log("Signing in to Puter...");
+          await ensurePuterSignedIn();
+          log("Signed in.");
+
+          const files = Array.from(folderEl.files || []).filter(f => {
+            const n = (f.name || "").toLowerCase();
+            return n.endsWith(".txt") || n.endsWith(".cha");
+          });
+
+          if (files.length === 0) {
+            throw new Error("No .txt or .cha files found. Pick a folder with transcripts first.");
+          }
+
+          const model = modelEl.value;
+          const temperature = Number(tempEl.value);
+          const chunkSize = Math.max(1, Number(chunkEl.value));
+
+          log(`Found ${files.length} files. Starting...`);
+          const all = [];
+
+          for (let i = 0; i < files.length; i++) {
+            const f = files[i];
+            log(`File ${i + 1}/${files.length}: ${f.webkitRelativePath || f.name}`);
+
+            const rows = await processFile(f, model, temperature, chunkSize);
+            all.push(...rows);
+
+            log(`  done (${rows.length} labeled rows)`);
+          }
+
+          log(`All done. Total rows: ${all.length}`);
+          downloadCsv(toCsv(all));
+        } catch (e) {
+          console.error(e);
+          const msg = e instanceof Error ? e.message : (typeof e === "string" ? e : JSON.stringify(e, null, 2));
+          log("FAILED: " + msg);
+        } finally {
+          btn.disabled = false;
+        }
+      });
+
+      log("Ready.");
+    </script>
+  </body>
+</html>

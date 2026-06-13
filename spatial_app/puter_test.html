@@ -1,0 +1,46 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Puter Smoke Test</title>
+    <script src="https://js.puter.com/v2/"></script>
+  </head>
+  <body>
+    <script type="module">
+      async function ensurePuterSignedIn() {
+        await puter.auth.signIn();
+      }
+
+      function extractText(resp) {
+        return (
+          (typeof resp === "string" && resp) ||
+          resp?.message?.content ||
+          resp?.text ||
+          JSON.stringify(resp)
+        );
+      }
+
+      async function main() {
+        console.log("Starting smoke test...");
+        await ensurePuterSignedIn();
+        console.log("Signed in.");
+
+        // Correct: first arg is messages ARRAY, second arg is options OBJECT
+        const messages = [
+          { role: "system", content: "Reply with exactly: OK" },
+          { role: "user", content: "ping" }
+        ];
+
+        const resp = await puter.ai.chat(messages, {
+          model: "gpt-4o-mini",
+          temperature: 0
+        });
+
+        console.log("raw resp:", resp);
+        console.log("text:", extractText(resp));
+      }
+
+      main().catch((e) => console.error("SMOKE TEST FAILED:", e));
+    </script>
+  </body>
+</html>
